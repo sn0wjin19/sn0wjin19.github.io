@@ -477,6 +477,7 @@ body {
   -moz-hyphens: auto;
   -ms-hyphens: auto;
   -webkit-hyphens: auto;
+  text-indent: 2em;
 }
 .content code {
   hyphens: manual;
