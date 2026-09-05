@@ -1,0 +1,43 @@
+name: tmp-hl-fast-probe
+on:
+  push:
+    branches:
+      - tmp-hl-resolve-aoyingziben-20260905
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          npm install --silent @nktkas/hyperliquid
+          cat > probe.mjs <<'JS'
+          import { WebSocketTransport, ExplorerClient } from '@nktkas/hyperliquid';
+          const ws=new ExplorerClient({transport:new WebSocketTransport({url:'wss://rpc.hyperliquid.xyz/ws'})});
+          const latest=await new Promise(async(resolve,reject)=>{
+            let sub; const timer=setTimeout(()=>reject(new Error('timeout latest')),10000);
+            sub=await ws.explorerBlock(data=>{if(Array.isArray(data)&&data.length){clearTimeout(timer);resolve(data.at(-1));queueMicrotask(()=>sub?.unsubscribe?.().catch?.(()=>{}));}},reject);
+          });
+          console.log('LATEST',JSON.stringify(latest));
+          const meta=await (await fetch('https://api.hyperliquid.xyz/info',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'meta'})})).json();
+          console.log('ZEC_INDEX',meta.universe.findIndex(x=>x.name==='ZEC'));
+          async function rawBlock(h){
+            const r=await fetch('https://rpc.hyperliquid.xyz/explorer',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'blockDetails',height:h}),signal:AbortSignal.timeout(8000)});
+            if(!r.ok) throw new Error('HTTP '+r.status);
+            const j=await r.json(); return j.blockDetails||j;
+          }
+          const near=await rawBlock(latest.height-5000);
+          console.log('NEAR',near.height,near.blockTime,new Date(Number(near.blockTime)).toISOString());
+          const msPerBlock=(Number(latest.blockTime)-Number(near.blockTime))/(latest.height-near.height);
+          console.log('MS_PER_BLOCK',msPerBlock);
+          const target=Date.parse('2026-09-04T20:52:00Z');
+          let est=Math.round(latest.height-(Number(latest.blockTime)-target)/msPerBlock);
+          for(let i=0;i<5;i++){
+            const b=await rawBlock(est);
+            const dt=Number(b.blockTime)-target;
+            console.log('CAL',i,'h',est,'t',new Date(Number(b.blockTime)).toISOString(),'dt_ms',dt,'txs',b.numTxs);
+            est=Math.max(1,Math.min(latest.height,Math.round(est-dt/msPerBlock)));
+          }
+          const b=await rawBlock(est);
+          console.log('FINAL_BLOCK',JSON.stringify({height:b.height,blockTime:b.blockTime,numTxs:b.numTxs,txSample:(b.txs||[]).slice(0,2)}));
+          JS
+          node probe.mjs
