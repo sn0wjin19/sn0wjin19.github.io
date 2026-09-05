@@ -5,74 +5,60 @@ on:
       - tmp-hl-resolve-aoyingziben-20260905
 jobs:
   calibrate:
-    timeout-minutes: 6
+    timeout-minutes: 4
     runs-on: ubuntu-latest
     steps:
       - shell: bash
         run: |
           python -m pip install --quiet requests
           python3 - <<'PY'
-          import json,time,requests
+          import requests,json
           from collections import defaultdict
           from datetime import datetime,timezone
-          urls=[
-            'https://portal.sqd.dev/datasets/hyperliquid-fills/finalized-stream',
-            'https://portal.sqd.dev/datasets/hyperliquid-fills/stream'
-          ]
-          fields={'block':{'number':True,'timestamp':True},'fill':{'user':True,'coin':True,'px':True,'sz':True,'side':True,'dir':True,'time':True,'oid':True,'closedPnl':True,'crossed':True,'tid':True}}
-          sess=requests.Session()
-          def query(lo,hi):
-            q={'type':'hyperliquidFills','fromBlock':lo,'toBlock':hi,'fields':fields,'fills':[{'coin':['ZEC']}]}
-            last=None
-            for attempt in range(8):
-              for url in urls:
-                try:
-                  r=sess.post(url,json=q,timeout=45)
-                  print('REQ',lo,hi,url.rsplit('/',1)[-1],'ATT',attempt,'HTTP',r.status_code,'BYTES',len(r.content),flush=True)
-                  if r.status_code in (200,204):
-                    if r.status_code==204 or not r.text.strip(): return []
-                    try:
-                      x=r.json(); return x if isinstance(x,list) else [x]
-                    except Exception:
-                      return [json.loads(z) for z in r.text.splitlines() if z.strip()]
-                  last=r.text[:300]
-                  if r.status_code not in (429,500,502,503,504,529): raise RuntimeError(last)
-                except Exception as e: last=repr(e)
-              time.sleep(min(20,2**attempt))
-            raise RuntimeError('SQD failed '+str(last))
+          USER='0x354dd2b1719ee86a2f4e04befa137c1cbe80c667'
+          def ms(y,m,d,H,M,S=0): return int(datetime(y,m,d,H,M,S,tzinfo=timezone.utc).timestamp()*1000)
+          start=ms(2026,9,4,20,45); end=ms(2026,9,5,0,20)
+          body={'type':'userFillsByTime','user':USER,'startTime':start,'endTime':end,'aggregateByTime':False}
+          r=requests.post('https://api.hyperliquid.xyz/info',json=body,timeout=60)
+          print('HTTP',r.status_code,'BYTES',len(r.content));print('PREFIX',r.text[:300]);r.raise_for_status()
+          fills=[f for f in r.json() if str(f.get('coin','')).upper()=='ZEC']
+          fills.sort(key=lambda f:int(f.get('time',0)))
+          print('ZEC_FILLS',len(fills))
+          for f in fills:
+            t=int(f.get('time',0)); dt=datetime.fromtimestamp(t/1000,timezone.utc).isoformat()
+            print('FILL',dt,json.dumps(f,separators=(',',':')))
 
-          # Screenshot event 1 is Sep 5 04:52 local UTC+8 = Sep 4 20:52 UTC.
-          lo,hi=1135672000,1135673050
-          blocks=[]
-          for a in range(lo,hi+1,75):
-            b=min(hi,a+74)
-            blocks.extend(query(a,b))
-            time.sleep(.25)
-          fills=[]
-          for block in blocks:
-            hdr=block.get('header',{})
-            for f in block.get('fills',[]):
-              f=dict(f);f['_block']=hdr.get('number');f['_bt']=hdr.get('timestamp');fills.append(f)
-          print('BLOCKS',len(blocks),'FILLS',len(fills),flush=True)
-          st=int(datetime(2026,9,4,20,51,40,tzinfo=timezone.utc).timestamp()*1000)
-          en=int(datetime(2026,9,4,20,53,20,tzinfo=timezone.utc).timestamp()*1000)
-          good=[f for f in fills if st<=int(f.get('time',0))<=en and f.get('side')=='A']
-          print('ASK_FILLS',len(good),flush=True)
-          by=defaultdict(list)
-          for f in good: by[str(f.get('user','')).lower()].append(f)
-          target=1219393.28/1028.0
-          ranked=[]
-          for u,fs in by.items():
-            if not u.startswith('0x'): continue
-            # Keep Open Short fills separately because a wallet may also reduce/reverse inside the minute.
-            os=[f for f in fs if f.get('dir')=='Open Short'] or fs
-            sz=sum(float(f.get('sz',0)) for f in os)
-            ntl=sum(float(f.get('sz',0))*float(f.get('px',0)) for f in os)
-            px=ntl/sz if sz else 0
-            rel=abs(sz-target)/target
-            pxrel=abs(px-1028)/1028 if px else 999
-            ranked.append((rel+pxrel*5,u,sz,px,rel,pxrel,len(os),min(int(f['time']) for f in os),max(int(f['time']) for f in os),sorted(set(str(f.get('dir')) for f in fs))))
-          ranked.sort()
-          print('CANDIDATES',len(ranked),flush=True)
-          for x in ranked[:80]: print('CAND',x,flush=True)
+          events=[
+            ('open1',ms(2026,9,4,20,52),'Open Short',1219393.28/1028.0,1028.0),
+            ('close1',ms(2026,9,4,21,10),'Close Short',230930.09/1025.9,1025.9),
+            ('open2',ms(2026,9,4,21,23),'Open Short',207867.86/1025.9,1025.9),
+            ('close2',ms(2026,9,5,0,12),'Close Short',142803.33/1023.9,1023.9),
+          ]
+          print('\nEVENT_AGG')
+          for name,t0,wantdir,target,ui_px in events:
+            # Fomo displays minute precision. Search +/- 90 seconds and group by exact fill timestamp/order direction.
+            near=[f for f in fills if abs(int(f.get('time',0))-t0)<=90_000 and f.get('dir')==wantdir]
+            groups=defaultdict(list)
+            for f in near: groups[(int(f.get('time',0)),f.get('oid'))].append(f)
+            rows=[]
+            for (t,oid),fs in groups.items():
+              sz=sum(float(x.get('sz',0)) for x in fs)
+              ntl=sum(float(x.get('sz',0))*float(x.get('px',0)) for x in fs)
+              px=ntl/sz if sz else 0
+              rows.append((abs(t-t0),abs(sz-target)/target if target else 9,abs(px-ui_px)/ui_px if px else 9,t,oid,sz,px,len(fs)))
+            rows.sort(key=lambda x:(x[0],x[1],x[2]))
+            print('\nEVENT',name,'targetSz',target,'targetPx',ui_px,'nearFills',len(near),'groups',len(rows))
+            for row in rows[:30]:
+              print('GROUP',name,row,'ISO',datetime.fromtimestamp(row[3]/1000,timezone.utc).isoformat())
+
+          # Also aggregate all fills by minute+direction to catch multi-order executions represented as many OIDs.
+          print('\nMINUTE_AGG')
+          for name,t0,wantdir,target,ui_px in events:
+            near=[f for f in fills if abs(int(f.get('time',0))-t0)<=90_000 and f.get('dir')==wantdir]
+            if near:
+              sz=sum(float(x.get('sz',0)) for x in near)
+              ntl=sum(float(x.get('sz',0))*float(x.get('px',0)) for x in near)
+              px=ntl/sz if sz else 0
+              print(name,'sz',sz,'vwap',px,'targetSz',target,'rel',abs(sz-target)/target,'pxRel',abs(px-ui_px)/ui_px,'times',datetime.fromtimestamp(min(int(x['time']) for x in near)/1000,timezone.utc).isoformat(),datetime.fromtimestamp(max(int(x['time']) for x in near)/1000,timezone.utc).isoformat(),'dirs',sorted(set(x.get('dir') for x in near)))
+            else: print(name,'NO_NEAR_FILLS')
           PY
