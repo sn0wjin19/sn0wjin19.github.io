@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <title>Fomo → Wallet</title>
+  <meta name="description" content="Resolve a Fomo handle or profile URL to verified Solana and EVM wallet addresses." />
+  <style>
+    :root { --bg:#080808; --line:#292929; --line-strong:#3a3a3a; --text:#f5f5f5; --muted:#9d9d9d; --dim:#6d6d6d; --accent:#d8ff4f; --ok:#9ff27f; --radius:18px; --radius-sm:12px; --shadow:0 28px 80px rgba(0,0,0,.42); }
+    * { box-sizing:border-box; }
+    html,body { min-height:100%; }
+    body { margin:0; color:var(--text); background:radial-gradient(circle at 20% -10%,rgba(216,255,79,.11),transparent 34%),radial-gradient(circle at 90% 20%,rgba(255,255,255,.055),transparent 24%),var(--bg); font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    button,input { font:inherit; } button,a { -webkit-tap-highlight-color:transparent; } a { color:inherit; }
+    .shell { width:min(920px,calc(100% - 32px)); margin:0 auto; padding:54px 0 72px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:48px; }
+    .brand { display:inline-flex; align-items:center; gap:10px; font-weight:750; letter-spacing:-.02em; }
+    .brand-mark { width:30px; height:30px; border-radius:9px; display:grid; place-items:center; background:var(--accent); color:#090909; font-weight:900; box-shadow:0 0 34px rgba(216,255,79,.18); }
+    .badge { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:999px; padding:7px 10px; color:var(--muted); background:rgba(255,255,255,.025); font-size:12px; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 14px rgba(216,255,79,.45); }
+    .hero { margin-bottom:28px; }
+    h1 { margin:0; max-width:760px; font-size:clamp(38px,7vw,72px); line-height:.98; letter-spacing:-.065em; font-weight:820; }
+    .hero p { margin:18px 0 0; max-width:660px; color:var(--muted); font-size:16px; }
+    .panel { background:linear-gradient(180deg,rgba(22,22,22,.9),rgba(12,12,12,.92)); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
+    .search-wrap { padding:18px; }
+    .search-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+    .input { width:100%; height:54px; border:1px solid var(--line-strong); border-radius:14px; background:#0a0a0a; color:var(--text); padding:0 16px; outline:none; transition:border-color .16s ease,box-shadow .16s ease; }
+    .input::placeholder { color:#626262; } .input:focus { border-color:#5a5a5a; box-shadow:0 0 0 4px rgba(255,255,255,.035); }
+    .primary { height:54px; border:0; border-radius:14px; padding:0 21px; background:var(--accent); color:#090909; font-weight:800; cursor:pointer; transition:transform .12s ease,background .15s ease,opacity .15s ease; }
+    .primary:hover { background:#e3ff77; } .primary:active { transform:translateY(1px); } .primary:disabled { cursor:wait; opacity:.64; }
+    .examples { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding-top:12px; color:var(--dim); font-size:12px; }
+    .chip { border:1px solid var(--line); border-radius:999px; background:transparent; color:var(--muted); padding:5px 9px; cursor:pointer; } .chip:hover { border-color:var(--line-strong); color:var(--text); }
+    .divider { height:1px; background:var(--line); }
+    .key-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; padding:16px 18px; background:rgba(0,0,0,.12); }
+    .key-field { position:relative; } .key-field .input { height:46px; padding-right:92px; }
+    .key-actions { position:absolute; right:7px; top:7px; display:flex; gap:4px; }
+    .icon-btn,.secondary,.copy-btn { border:1px solid var(--line); background:#111; color:var(--muted); border-radius:9px; cursor:pointer; transition:border-color .15s ease,color .15s ease,background .15s ease; }
+    .icon-btn { height:32px; padding:0 9px; font-size:12px; } .icon-btn:hover,.secondary:hover,.copy-btn:hover { border-color:var(--line-strong); color:var(--text); background:#171717; }
+    .secondary { height:46px; padding:0 13px; white-space:nowrap; }
+    .privacy { grid-column:1/-1; color:var(--dim); font-size:11px; margin-top:-1px; }
+    .status { display:none; margin-top:14px; padding:13px 14px; border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.025); color:var(--muted); font-size:13px; }
+    .status.show { display:block; } .status.error { border-color:rgba(255,107,107,.28); color:#ff9d9d; background:rgba(255,107,107,.055); } .status.ok { border-color:rgba(159,242,127,.22); color:var(--ok); background:rgba(159,242,127,.045); }
+    .result { display:none; margin-top:18px; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; background:rgba(13,13,13,.92); } .result.show { display:block; }
+    .profile { display:flex; align-items:center; gap:14px; padding:18px; border-bottom:1px solid var(--line); }
+    .avatar { width:48px; height:48px; border-radius:14px; object-fit:cover; background:#1c1c1c; border:1px solid var(--line); display:none; } .avatar.show { display:block; }
+    .avatar-fallback { width:48px; height:48px; border-radius:14px; display:grid; place-items:center; background:#161616; border:1px solid var(--line); color:var(--accent); font-weight:850; font-size:20px; }
+    .profile-meta { min-width:0; } .profile-name { font-weight:780; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .profile-handle { color:var(--muted); font-size:13px; } .profile-id { color:var(--dim); font-size:11px; margin-top:2px; word-break:break-all; }
+    .addresses { display:grid; }
+    .address-row { display:grid; grid-template-columns:94px minmax(0,1fr) auto; gap:14px; align-items:center; padding:18px; border-bottom:1px solid var(--line); } .address-row:last-child { border-bottom:0; }
+    .chain-label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:780; }
+    .address { min-width:0; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:#dedede; word-break:break-all; } .unavailable { color:var(--dim); font-family:inherit; }
+    .actions { display:flex; gap:7px; } .copy-btn { padding:8px 10px; font-size:12px; text-decoration:none; white-space:nowrap; }
+    .footer { display:flex; justify-content:space-between; gap:18px; margin-top:18px; color:var(--dim); font-size:11px; } .footer a { color:var(--muted); text-decoration:none; } .footer a:hover { color:var(--text); }
+    .recent { margin-top:18px; border:1px solid var(--line); border-radius:var(--radius-sm); overflow:hidden; display:none; } .recent.show { display:block; }
+    .recent-head { padding:10px 13px; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.08em; border-bottom:1px solid var(--line); }
+    .recent-list { display:grid; } .recent-item { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; width:100%; border:0; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); color:var(--text); padding:11px 13px; cursor:pointer; text-align:left; }
+    .recent-item:last-child { border-bottom:0; } .recent-item:hover { background:rgba(255,255,255,.035); } .recent-wallet { color:var(--dim); font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    .spinner { width:15px; height:15px; border-radius:50%; border:2px solid rgba(0,0,0,.22); border-top-color:#111; display:inline-block; vertical-align:-3px; margin-right:7px; animation:spin .7s linear infinite; } @keyframes spin { to { transform:rotate(360deg); } }
+    @media (max-width:640px) { .shell{width:min(100% - 22px,920px);padding-top:28px}.topbar{margin-bottom:34px}.badge{display:none}h1{font-size:clamp(42px,14vw,62px)}.search-row,.key-row{grid-template-columns:1fr}.primary,.secondary{width:100%}.address-row{grid-template-columns:1fr;gap:8px}.actions{justify-content:flex-start}.footer{flex-direction:column} }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><div class="brand"><span class="brand-mark">F</span><span>Fomo → Wallet</span></div><div class="badge"><span class="dot"></span> Verified identity lookup</div></header>
+    <section class="hero"><h1>Turn a Fomo user into an address.</h1><p>Paste a Fomo handle or profile URL. The lookup returns verified Solana and EVM addresses from FomoScan when available.</p></section>
+    <section class="panel" aria-label="Resolver">
+      <div class="search-wrap">
+        <form id="resolverForm" class="search-row"><input id="query" class="input" autocomplete="off" spellcheck="false" placeholder="@frankdegods or a Fomo profile URL" aria-label="Fomo handle or profile URL" /><button id="resolveButton" class="primary" type="submit">Resolve</button></form>
+        <div class="examples"><span>Try:</span><button class="chip" type="button" data-example="frankdegods">@frankdegods</button></div><div id="status" class="status" role="status" aria-live="polite"></div>
+      </div>
+      <div class="divider"></div>
+      <div class="key-row">
+        <div class="key-field"><input id="apiKey" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="FomoScan API key · fsk_live_…" aria-label="FomoScan API key" /><div class="key-actions"><button id="toggleKey" class="icon-btn" type="button">Show</button><button id="clearKey" class="icon-btn" type="button">Clear</button></div></div>
+        <button id="rememberKey" class="secondary" type="button" aria-pressed="false">Session only</button>
+        <div class="privacy">The key is sent directly from your browser to api.fomoscan.sh. It is never committed to this site. “Session only” clears it when the browser session ends.</div>
+      </div>
+    </section>
+    <section id="result" class="result" aria-label="Resolved wallet">
+      <div class="profile"><img id="avatar" class="avatar" alt="" referrerpolicy="no-referrer" /><div id="avatarFallback" class="avatar-fallback">F</div><div class="profile-meta"><div id="profileName" class="profile-name"></div><div id="profileHandle" class="profile-handle"></div><div id="profileId" class="profile-id"></div></div></div>
+      <div class="addresses">
+        <div class="address-row"><div class="chain-label">Solana</div><div id="solAddress" class="address"></div><div class="actions"><button id="copySol" class="copy-btn" type="button">Copy</button><a id="openSol" class="copy-btn" href="#" target="_blank" rel="noreferrer">Solscan ↗</a></div></div>
+        <div class="address-row"><div class="chain-label">EVM</div><div id="evmAddress" class="address"></div><div class="actions"><button id="copyEvm" class="copy-btn" type="button">Copy</button><a id="openEvm" class="copy-btn" href="#" target="_blank" rel="noreferrer">Etherscan ↗</a></div></div>
+      </div>
+    </section>
+    <section id="recent" class="recent" aria-label="Recent lookups"><div class="recent-head">Recent</div><div id="recentList" class="recent-list"></div></section>
+    <footer class="footer"><span>Unofficial utility. No wallet connection, signature, or transaction is requested.</span><span>Data: <a href="https://www.fomoscan.sh/api" target="_blank" rel="noreferrer">FomoScan API ↗</a></span></footer>
+  </main>
+  <script>
+    (()=>{'use strict';
+      const API_BASE='https://api.fomoscan.sh',SESSION_KEY='fomoResolver.apiKey.session',LOCAL_KEY='fomoResolver.apiKey.local',REMEMBER_KEY='fomoResolver.remember',HISTORY_KEY='fomoResolver.history',MAX_HISTORY=6;
+      const $=id=>document.getElementById(id),form=$('resolverForm'),queryInput=$('query'),apiKeyInput=$('apiKey'),resolveButton=$('resolveButton'),rememberButton=$('rememberKey'),statusEl=$('status'),resultEl=$('result'),recentEl=$('recent'),recentList=$('recentList');
+      let remember=localStorage.getItem(REMEMBER_KEY)==='1',currentSol='',currentEvm='';
+      function loadKey(){const local=localStorage.getItem(LOCAL_KEY)||'',session=sessionStorage.getItem(SESSION_KEY)||'';apiKeyInput.value=remember?local:session;syncRememberButton()}
+      function persistKey(){const key=apiKeyInput.value.trim();if(remember){localStorage.setItem(LOCAL_KEY,key);sessionStorage.removeItem(SESSION_KEY)}else{sessionStorage.setItem(SESSION_KEY,key);localStorage.removeItem(LOCAL_KEY)}}
+      function syncRememberButton(){rememberButton.textContent=remember?'Remember key':'Session only';rememberButton.setAttribute('aria-pressed',remember?'true':'false')}
+      function normalizeHandle(raw){let value=String(raw||'').trim();if(!value)return'';if(/^https?:\/\//i.test(value)){try{const url=new URL(value),parts=url.pathname.split('/').filter(Boolean);value=parts[parts.length-1]||''}catch(_){}}value=value.replace(/^@+/,'').replace(/[?#].*$/,'').trim();if(value.includes('/')){const parts=value.split('/').filter(Boolean);value=parts[parts.length-1]||''}return value}
+      function setStatus(message,type=''){statusEl.className=`status show ${type}`.trim();statusEl.textContent=message}
+      function clearStatus(){statusEl.className='status';statusEl.textContent=''}
+      function setLoading(loading){resolveButton.disabled=loading;resolveButton.innerHTML=loading?'<span class="spinner"></span>Resolving':'Resolve'}
+      function setText(id,value){$(id).textContent=value||''}
+      function shortAddress(value){if(!value)return'Unavailable';if(value.length<18)return value;return`${value.slice(0,8)}…${value.slice(-6)}`}
+      function renderResult(data,requestedHandle){const handle=data.handle||requestedHandle,name=data.name||handle||'Fomo user',id=data.id||'',sol=data.solanaAddress||'',evm=data.evmAddress||'',avatarUrl=data.profilePicture||'';currentSol=sol;currentEvm=evm;setText('profileName',name);setText('profileHandle',handle?`@${handle}`:'');setText('profileId',id?`ID ${id}`:'');const avatar=$('avatar'),fallback=$('avatarFallback');fallback.textContent=(name||'F').slice(0,1).toUpperCase();if(avatarUrl){avatar.src=avatarUrl;avatar.classList.add('show');fallback.style.display='none';avatar.onerror=()=>{avatar.classList.remove('show');fallback.style.display='grid'}}else{avatar.removeAttribute('src');avatar.classList.remove('show');fallback.style.display='grid'}const solEl=$('solAddress'),evmEl=$('evmAddress');solEl.textContent=sol||'Unavailable';evmEl.textContent=evm||'Unavailable';solEl.classList.toggle('unavailable',!sol);evmEl.classList.toggle('unavailable',!evm);$('copySol').disabled=!sol;$('copyEvm').disabled=!evm;$('openSol').style.display=sol?'inline-flex':'none';$('openEvm').style.display=evm?'inline-flex':'none';$('openSol').href=sol?`https://solscan.io/account/${encodeURIComponent(sol)}`:'#';$('openEvm').href=evm?`https://etherscan.io/address/${encodeURIComponent(evm)}`:'#';resultEl.classList.add('show');saveHistory({handle,name,sol,evm,at:Date.now()})}
+      function getHistory(){try{const parsed=JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]');return Array.isArray(parsed)?parsed:[]}catch(_){return[]}}
+      function saveHistory(entry){if(!entry.handle)return;const next=getHistory().filter(item=>item.handle!==entry.handle);next.unshift(entry);localStorage.setItem(HISTORY_KEY,JSON.stringify(next.slice(0,MAX_HISTORY)));renderHistory()}
+      function renderHistory(){const items=getHistory();recentList.replaceChildren();if(!items.length){recentEl.classList.remove('show');return}recentEl.classList.add('show');items.forEach(item=>{const button=document.createElement('button');button.type='button';button.className='recent-item';const left=document.createElement('span');left.textContent=`@${item.handle}`;const right=document.createElement('span');right.className='recent-wallet';right.textContent=shortAddress(item.sol||item.evm||'');button.append(left,right);button.addEventListener('click',()=>{queryInput.value=item.handle;queryInput.focus()});recentList.appendChild(button)})}
+      async function copyText(value,button){if(!value)return;const original=button.textContent;try{await navigator.clipboard.writeText(value)}catch(_){const ta=document.createElement('textarea');ta.value=value;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}button.textContent='Copied';window.setTimeout(()=>{button.textContent=original},900)}
+      async function resolveHandle(raw){clearStatus();resultEl.classList.remove('show');const handle=normalizeHandle(raw),apiKey=apiKeyInput.value.trim();if(!handle){setStatus('Enter a Fomo handle or profile URL.','error');queryInput.focus();return}if(!apiKey){setStatus('Add your FomoScan API key first.','error');apiKeyInput.focus();return}persistKey();setLoading(true);setStatus(`Resolving @${handle}…`);try{const response=await fetch(`${API_BASE}/v2/user/handle/${encodeURIComponent(handle)}`,{method:'GET',headers:{Accept:'application/json',Authorization:`Bearer ${apiKey}`},cache:'no-store'});let payload=null;const rawText=await response.text();if(rawText){try{payload=JSON.parse(rawText)}catch(_){payload={message:rawText}}}if(!response.ok){const detail=payload&&(payload.detail||payload.message||payload.error);if(response.status===401||response.status===403)throw new Error('API key rejected. Check the FomoScan key and try again.');if(response.status===404)throw new Error(`No verified Fomo identity found for @${handle}.`);if(response.status===402)throw new Error('FomoScan reports insufficient balance or payment required for this lookup.');if(response.status===429)throw new Error('Rate limit reached. Try again shortly.');throw new Error(detail||`FomoScan returned HTTP ${response.status}.`)}renderResult(payload||{},handle);setStatus(`Resolved @${payload?.handle||handle}.`,'ok');const url=new URL(location.href);url.searchParams.set('q',payload?.handle||handle);history.replaceState(null,'',url)}catch(error){const message=error&&error.message?error.message:String(error);if(message==='Failed to fetch'||message.includes('NetworkError'))setStatus('Browser request failed. This is usually a network or CORS issue reaching api.fomoscan.sh.','error');else setStatus(message,'error')}finally{setLoading(false)}}
+      form.addEventListener('submit',event=>{event.preventDefault();resolveHandle(queryInput.value)});
+      document.querySelectorAll('[data-example]').forEach(button=>button.addEventListener('click',()=>{queryInput.value=button.dataset.example||'';queryInput.focus()}));
+      $('toggleKey').addEventListener('click',()=>{const isPassword=apiKeyInput.type==='password';apiKeyInput.type=isPassword?'text':'password';$('toggleKey').textContent=isPassword?'Hide':'Show'});
+      $('clearKey').addEventListener('click',()=>{apiKeyInput.value='';localStorage.removeItem(LOCAL_KEY);sessionStorage.removeItem(SESSION_KEY);setStatus('API key cleared from this browser session.','ok')});
+      rememberButton.addEventListener('click',()=>{remember=!remember;localStorage.setItem(REMEMBER_KEY,remember?'1':'0');persistKey();syncRememberButton()});
+      apiKeyInput.addEventListener('change',persistKey);$('copySol').addEventListener('click',()=>copyText(currentSol,$('copySol')));$('copyEvm').addEventListener('click',()=>copyText(currentEvm,$('copyEvm')));loadKey();renderHistory();const initialQuery=new URL(location.href).searchParams.get('q');if(initialQuery)queryInput.value=initialQuery;
+    })();
+  </script>
+</body>
+</html>
