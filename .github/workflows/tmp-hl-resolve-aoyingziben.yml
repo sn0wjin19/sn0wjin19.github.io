@@ -13,7 +13,7 @@ jobs:
         run: |
           node --version
           npm install --silent @nktkas/hyperliquid
-          cat > /tmp/resolve.mjs <<'JS'
+          cat > resolve.mjs <<'JS'
           import { HttpTransport, WebSocketTransport, ExplorerClient } from '@nktkas/hyperliquid';
 
           const BUILDER='0x2a2b6b093a9813fbd8cddae800c3d17d46460d17';
@@ -49,7 +49,6 @@ jobs:
             cache.set(height,b);
             return b;
           }
-
           async function findHeightAtOrBefore(ts){
             let lo=1, hi=latest.height;
             while(lo<hi){
@@ -60,7 +59,6 @@ jobs:
             }
             return lo;
           }
-
           function collectAddresses(obj, path='', out=[]){
             if(obj==null) return out;
             if(typeof obj==='string'){
@@ -71,34 +69,22 @@ jobs:
             if(typeof obj==='object'){ for(const [k,v] of Object.entries(obj)) collectAddresses(v,path?`${path}.${k}`:k,out); }
             return out;
           }
-
-          function containsBuilder(tx){
-            return JSON.stringify(tx).toLowerCase().includes(BUILDER);
-          }
-          function looksZec(tx){
-            const s=JSON.stringify(tx).toUpperCase();
-            return s.includes('ZEC');
-          }
-          function looksOrder(tx){
-            const s=JSON.stringify(tx).toLowerCase();
-            return s.includes('order') || s.includes('orders');
-          }
+          function containsBuilder(tx){ return JSON.stringify(tx).toLowerCase().includes(BUILDER); }
+          function looksZec(tx){ return JSON.stringify(tx).toUpperCase().includes('ZEC'); }
+          function looksOrder(tx){ const s=JSON.stringify(tx).toLowerCase(); return s.includes('order') || s.includes('orders'); }
 
           for(const [name,ts] of targetTimes){
             const h=await findHeightAtOrBefore(ts);
             const center=await block(h);
             console.log('\nTARGET',name,new Date(ts).toISOString(),'HEIGHT',h,'BLOCKTIME',new Date(Number(center.blockTime)).toISOString(),'TXS',center.numTxs);
             const hits=[];
-            // scan roughly +/- 90 seconds assuming subsecond blocks; use actual times to stop
             for(let dh=-500;dh<=500;dh++){
               const hh=h+dh; if(hh<1||hh>latest.height) continue;
               let b; try{b=await block(hh);}catch{continue;}
               const dt=Number(b.blockTime)-ts;
               if(dt < -120000 || dt > 120000) continue;
               for(const tx of b.txs||[]){
-                if(containsBuilder(tx) && looksOrder(tx)){
-                  hits.push({height:hh,blockTime:b.blockTime,dt,zec:looksZec(tx),tx});
-                }
+                if(containsBuilder(tx) && looksOrder(tx)) hits.push({height:hh,blockTime:b.blockTime,dt,zec:looksZec(tx),tx});
               }
             }
             console.log('BUILDER_ORDER_HITS',hits.length,'ZEC_BUILDER_HITS',hits.filter(x=>x.zec).length);
@@ -107,4 +93,4 @@ jobs:
             }
           }
           JS
-          node /tmp/resolve.mjs
+          node resolve.mjs
