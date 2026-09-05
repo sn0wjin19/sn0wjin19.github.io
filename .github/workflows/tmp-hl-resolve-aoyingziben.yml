@@ -8,21 +8,26 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve historical ZEC orders via explorer
+      - name: Parallel targeted ZEC explorer scan
         shell: bash
         run: |
-          node --version
           npm install --silent @nktkas/hyperliquid
           cat > resolve.mjs <<'JS'
           import { HttpTransport, WebSocketTransport, ExplorerClient } from '@nktkas/hyperliquid';
 
           const BUILDER='0x2a2b6b093a9813fbd8cddae800c3d17d46460d17';
-          const targetTimes=[
-            ['open1', Date.parse('2026-09-04T20:52:00Z')],
-            ['close1',Date.parse('2026-09-04T21:10:00Z')],
-            ['open2', Date.parse('2026-09-04T21:23:00Z')],
-            ['close2',Date.parse('2026-09-05T00:12:00Z')],
+          const events=[
+            {name:'open1',  ts:Date.parse('2026-09-04T20:52:00Z'), buy:false, targetSz:1219393.28/1028.0, targetPx:1028.0},
+            {name:'close1', ts:Date.parse('2026-09-04T21:10:00Z'), buy:true,  targetSz:230930.09/1025.9, targetPx:1025.9},
+            {name:'open2',  ts:Date.parse('2026-09-04T21:23:00Z'), buy:false, targetSz:207867.86/1025.9, targetPx:1025.9},
+            {name:'close2', ts:Date.parse('2026-09-05T00:12:00Z'), buy:true,  targetSz:142803.33/1023.9, targetPx:1023.9},
           ];
+
+          const metaResp=await fetch('https://api.hyperliquid.xyz/info',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'meta'})});
+          const meta=await metaResp.json();
+          const zecIndex=meta.universe.findIndex(x=>x.name==='ZEC');
+          console.log('ZEC_INDEX',zecIndex,'META_NAME',meta.universe[zecIndex]?.name);
+          if(zecIndex<0) throw new Error('ZEC missing from meta');
 
           const wsTransport=new WebSocketTransport({url:'wss://rpc.hyperliquid.xyz/ws'});
           const wsClient=new ExplorerClient({transport:wsTransport});
@@ -30,66 +35,80 @@ jobs:
             const timer=setTimeout(()=>reject(new Error('explorerBlock timeout')),15000);
             let sub;
             sub=await wsClient.explorerBlock((data)=>{
-              if (!Array.isArray(data)||!data.length) return;
-              const b=data[data.length-1];
+              if(!Array.isArray(data)||!data.length) return;
               clearTimeout(timer);
-              resolve(b);
+              resolve(data[data.length-1]);
               queueMicrotask(()=>sub?.unsubscribe?.().catch?.(()=>{}));
             },reject);
           });
-          console.log('LATEST',JSON.stringify(latest));
+          console.log('LATEST',latest.height,new Date(latest.blockTime).toISOString());
 
-          const httpTransport=new HttpTransport();
-          const client=new ExplorerClient({transport:httpTransport});
+          const client=new ExplorerClient({transport:new HttpTransport()});
           const cache=new Map();
-          async function block(height){
-            if(cache.has(height)) return cache.get(height);
-            const r=await client.blockDetails({height});
-            const b=r.blockDetails;
-            cache.set(height,b);
-            return b;
+          async function block(h){
+            if(cache.has(h)) return cache.get(h);
+            const b=(await client.blockDetails({height:h})).blockDetails;
+            cache.set(h,b); return b;
           }
-          async function findHeightAtOrBefore(ts){
-            let lo=1, hi=latest.height;
+          async function heightAt(ts){
+            let lo=1,hi=latest.height;
             while(lo<hi){
               const mid=Math.ceil((lo+hi)/2);
-              let b;
-              try { b=await block(mid); } catch(e){ hi=mid-1; continue; }
-              if(Number(b.blockTime)<=ts) lo=mid; else hi=mid-1;
+              try{
+                const b=await block(mid);
+                if(Number(b.blockTime)<=ts) lo=mid; else hi=mid-1;
+              }catch{hi=mid-1;}
             }
             return lo;
           }
-          function collectAddresses(obj, path='', out=[]){
-            if(obj==null) return out;
-            if(typeof obj==='string'){
-              if(/^0x[a-fA-F0-9]{40}$/.test(obj)) out.push([path,obj.toLowerCase()]);
-              return out;
-            }
-            if(Array.isArray(obj)){ obj.forEach((v,i)=>collectAddresses(v,`${path}[${i}]`,out)); return out; }
-            if(typeof obj==='object'){ for(const [k,v] of Object.entries(obj)) collectAddresses(v,path?`${path}.${k}`:k,out); }
-            return out;
-          }
-          function containsBuilder(tx){ return JSON.stringify(tx).toLowerCase().includes(BUILDER); }
-          function looksZec(tx){ return JSON.stringify(tx).toUpperCase().includes('ZEC'); }
-          function looksOrder(tx){ const s=JSON.stringify(tx).toLowerCase(); return s.includes('order') || s.includes('orders'); }
-
-          for(const [name,ts] of targetTimes){
-            const h=await findHeightAtOrBefore(ts);
-            const center=await block(h);
-            console.log('\nTARGET',name,new Date(ts).toISOString(),'HEIGHT',h,'BLOCKTIME',new Date(Number(center.blockTime)).toISOString(),'TXS',center.numTxs);
-            const hits=[];
-            for(let dh=-500;dh<=500;dh++){
-              const hh=h+dh; if(hh<1||hh>latest.height) continue;
-              let b; try{b=await block(hh);}catch{continue;}
-              const dt=Number(b.blockTime)-ts;
-              if(dt < -120000 || dt > 120000) continue;
-              for(const tx of b.txs||[]){
-                if(containsBuilder(tx) && looksOrder(tx)) hits.push({height:hh,blockTime:b.blockTime,dt,zec:looksZec(tx),tx});
+          function hasBuilder(tx){return JSON.stringify(tx).toLowerCase().includes(BUILDER);}
+          function extractOrderActions(tx,out=[]){
+            if(tx==null) return out;
+            if(Array.isArray(tx)){tx.forEach(v=>extractOrderActions(v,out));return out;}
+            if(typeof tx!=='object') return out;
+            if(Array.isArray(tx.orders)){
+              for(const o of tx.orders){
+                if(o && Number(o.a)===zecIndex) out.push(o);
               }
             }
-            console.log('BUILDER_ORDER_HITS',hits.length,'ZEC_BUILDER_HITS',hits.filter(x=>x.zec).length);
-            for(const x of hits.filter(x=>x.zec).slice(0,80)){
-              console.log('HIT',name,'dt_ms',x.dt,'height',x.height,'addresses',JSON.stringify(collectAddresses(x.tx)),'tx',JSON.stringify(x.tx).slice(0,5000));
+            for(const v of Object.values(tx)) extractOrderActions(v,out);
+            return out;
+          }
+          function addresses(tx){
+            const out=[];
+            (function rec(v,p=''){
+              if(typeof v==='string'&&/^0x[a-fA-F0-9]{40}$/.test(v)) out.push([p,v.toLowerCase()]);
+              else if(Array.isArray(v))v.forEach((x,i)=>rec(x,`${p}[${i}]`));
+              else if(v&&typeof v==='object')for(const[k,x]of Object.entries(v))rec(x,p?`${p}.${k}`:k);
+            })(tx);return out;
+          }
+          async function mapLimit(items,limit,fn){
+            const res=new Array(items.length);let next=0;
+            async function worker(){while(true){const i=next++;if(i>=items.length)return;try{res[i]=await fn(items[i]);}catch(e){res[i]=null;}}}
+            await Promise.all(Array.from({length:Math.min(limit,items.length)},worker));return res;
+          }
+
+          for(const e of events){
+            const start=e.ts-120000,end=e.ts+120000;
+            const hs=await heightAt(start), he=await heightAt(end)+2;
+            const heights=[];for(let h=hs;h<=he;h++)heights.push(h);
+            console.log('\nEVENT',e.name,new Date(e.ts).toISOString(),'HEIGHT_RANGE',hs,he,'BLOCKS',heights.length,'targetSz',e.targetSz.toFixed(5),'targetPx',e.targetPx);
+            const bs=(await mapLimit(heights,24,block)).filter(Boolean);
+            const hits=[];
+            for(const b of bs){
+              for(const tx of b.txs||[]){
+                if(!hasBuilder(tx)) continue;
+                const orders=extractOrderActions(tx);
+                if(!orders.length) continue;
+                for(const o of orders){
+                  hits.push({dt:(Number(b.blockTime)-e.ts)/1000,height:b.height,time:b.blockTime,order:o,addresses:addresses(tx),tx});
+                }
+              }
+            }
+            hits.sort((a,b)=>Math.abs(a.dt)-Math.abs(b.dt));
+            console.log('ZEC_FOMO_ORDER_HITS',hits.length);
+            for(const h of hits.slice(0,120)){
+              console.log('HIT',e.name,'dt',h.dt,'height',h.height,'order',JSON.stringify(h.order),'addresses',JSON.stringify(h.addresses),'tx',JSON.stringify(h.tx).slice(0,3500));
             }
           }
           JS
