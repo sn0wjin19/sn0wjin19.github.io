@@ -25,6 +25,7 @@ jobs:
                 if e.code==429 and i<4: time.sleep(2**i); continue
                 print('BLOCK',h,'ERR',repr(e)); return
               except Exception as e: print('BLOCK',h,'ERR',repr(e)); return
-          for h in [1133000000,1134000000,1135000000,1135500000,1136000000,1136500000,1137000000,1138000000]:
-            get(h); time.sleep(0.5)
+          centers=[1135671456,1135686462,1135697301,1135838199]
+          for c in centers:
+            for h in [c-1000,c,c+1000]: get(h); time.sleep(0.25)
           PY
