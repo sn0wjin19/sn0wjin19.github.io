@@ -5,75 +5,77 @@ on:
       - tmp-hl-resolve-aoyingziben-20260905
 jobs:
   calibrate:
-    timeout-minutes: 4
+    timeout-minutes: 8
     runs-on: ubuntu-latest
     steps:
       - shell: bash
         run: |
-          python -m pip install --quiet requests
+          python -m pip install --quiet huggingface_hub pyarrow requests
           python3 - <<'PY'
-          import json, requests
+          import json,re,os
           from collections import defaultdict
-          from datetime import datetime, timezone
+          from datetime import datetime,timezone
+          from huggingface_hub import list_repo_files,hf_hub_download
+          import pyarrow.parquet as pq
 
-          BASE='https://datasets-server.huggingface.co'
-          DATASET='gionuibk/hyperliquid-node-fills-by-block'
-          print('SPLITS',requests.get(BASE+'/splits',params={'dataset':DATASET},timeout=30).text[:1000])
+          REPO='gionuibk/hyperliquid-node-fills-by-block'
+          files=list_repo_files(REPO,repo_type='dataset')
+          matches=[f for f in files if '20260904' in f or '20260905' in f]
+          print('DATE_MATCHES',len(matches))
+          for f in matches[:100]: print('FILE',f)
+          if not matches:
+            raise SystemExit('NO_20260904_FILES')
+
+          dated=[]
+          for f in matches:
+            m=re.search(r'20260904_(\d+)',f)
+            if m: dated.append((int(m.group(1)),f))
+          dated.sort()
+          # 20:52 UTC should live in the first batch whose "upto" hour is >=21.
+          candidates=[(h,f) for h,f in dated if h>=21] or dated
+          print('CANDIDATE_SHARDS',candidates[:10])
 
           lo,hi=1135671950,1135673150
-          where=f'"block_number">={lo} AND "block_number"<={hi}'
-          allrows=[]
-          for offset in range(0,1600,100):
-            r=requests.get(BASE+'/filter',params={'dataset':DATASET,'config':'default','split':'train','where':where,'offset':offset,'length':100},timeout=60)
-            print('PAGE',offset,'HTTP',r.status_code,'LEN',len(r.content))
-            if not r.ok:
-              print('ERR',r.text[:2000]); break
-            j=r.json(); rows=j.get('rows',[])
-            print('ROWS',len(rows),'TOTAL',j.get('num_rows_total'),'PARTIAL',j.get('partial'))
-            if rows:
-              print('SAMPLE_KEYS',rows[0].get('row',{}).keys(),'TRUNC',rows[0].get('truncated_cells'))
-            allrows.extend(rows)
-            if len(rows)<100: break
+          rows=[]
+          for h,f in candidates[:3]:
+            print('DOWNLOAD',h,f)
+            path=hf_hub_download(REPO,f,repo_type='dataset')
+            pf=pq.ParquetFile(path)
+            print('SHARD',f,'ROWS',pf.metadata.num_rows,'GROUPS',pf.num_row_groups)
+            table=pq.read_table(path,columns=['block_number','block_time','events'],filters=[('block_number','>=',lo),('block_number','<=',hi)])
+            print('FILTERED',f,table.num_rows)
+            rows.extend(table.to_pylist())
+            if rows: break
 
-          print('TOTAL_ROWS_FETCHED',len(allrows))
+          print('TOTAL_FILTERED_ROWS',len(rows))
           z=[]
-          truncated=0
-          for rr in allrows:
-            row=rr.get('row',{})
-            if rr.get('truncated_cells'): truncated+=1
+          for row in rows:
             ev=row.get('events')
-            if not ev: continue
             if isinstance(ev,str):
               try: ev=json.loads(ev)
-              except Exception: continue
+              except: continue
             if not isinstance(ev,list): continue
             for pair in ev:
               try:
                 user,fill=pair[0],pair[1]
-                if str(fill.get('coin','')).upper()!='ZEC': continue
-                z.append((str(user).lower(),fill,row.get('block_number'),row.get('block_time')))
-              except Exception: pass
-          print('TRUNCATED_ROWS',truncated,'ZEC_FILLS',len(z))
-          for user,fill,bn,bt in z[:100]:
-            print('ZEC',bn,bt,user,json.dumps(fill,separators=(',',':'))[:1200])
-
-          # Screenshot first event: around 20:52 UTC, Open Short, approx 1186 ZEC total.
+                if str(fill.get('coin','')).upper()=='ZEC': z.append((str(user).lower(),fill,row.get('block_number'),row.get('block_time')))
+              except: pass
+          print('ZEC_FILLS',len(z))
+          start=int(datetime(2026,9,4,20,52,0,tzinfo=timezone.utc).timestamp()*1000); end=start+60_000
           by=defaultdict(list)
-          start=int(datetime(2026,9,4,20,52,0,tzinfo=timezone.utc).timestamp()*1000)
-          end=start+60_000
           for user,fill,bn,bt in z:
-            try: t=int(fill.get('time',0))
-            except: continue
-            if start-10_000 <= t <= end+10_000 and fill.get('side')=='A': by[user].append(fill)
+            try:t=int(fill.get('time',0))
+            except:continue
+            if start-10_000<=t<=end+10_000 and fill.get('side')=='A':by[user].append(fill)
+          target=1219393.28/1028.0
           ranked=[]
           for user,fs in by.items():
             sz=sum(float(f.get('sz',0)) for f in fs)
             ntl=sum(float(f.get('sz',0))*float(f.get('px',0)) for f in fs)
             px=ntl/sz if sz else 0
-            dirs=sorted(set(str(f.get('dir')) for f in fs))
-            rel=abs(sz-(1219393.28/1028.0))/(1219393.28/1028.0)
-            ranked.append((rel,user,sz,px,dirs,len(fs),min(int(f.get('time',0)) for f in fs),max(int(f.get('time',0)) for f in fs)))
+            rel=abs(sz-target)/target
+            ranked.append((rel,user,sz,px,sorted(set(str(f.get('dir')) for f in fs)),len(fs),min(int(f.get('time',0)) for f in fs),max(int(f.get('time',0)) for f in fs)))
           ranked.sort()
           print('CANDIDATES',len(ranked))
-          for x in ranked[:30]: print('CAND',x)
+          for x in ranked[:40]: print('CAND',x)
           PY
