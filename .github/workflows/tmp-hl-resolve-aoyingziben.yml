@@ -8,36 +8,103 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe recent ZEC trades
+      - name: Resolve historical ZEC orders via explorer
         shell: bash
         run: |
-          python - <<'PY'
-          import requests
-          from datetime import datetime, timezone
+          node --version
+          npm install --silent @nktkas/hyperliquid
+          cat > /tmp/resolve.mjs <<'JS'
+          import { HttpTransport, WebSocketTransport, ExplorerClient } from '@nktkas/hyperliquid';
 
-          events=[
-            ('open1','2026-09-04T20:52:00+00:00','A',1186.180233463035),
-            ('close1','2026-09-04T21:10:00+00:00','B',225.10),
-            ('open2','2026-09-04T21:23:00+00:00','A',202.6200019495),
-            ('close2','2026-09-05T00:12:00+00:00','B',139.46999707),
-          ]
-          ev=[(n,int(datetime.fromisoformat(t).timestamp()*1000),s,z) for n,t,s,z in events]
-          r=requests.post('https://api.hyperliquid.xyz/info',json={'type':'recentTrades','coin':'ZEC'},timeout=30)
-          print('HTTP',r.status_code)
-          print('BODY_PREFIX',r.text[:500])
-          r.raise_for_status()
-          xs=r.json()
-          print('COUNT',len(xs))
-          if xs:
-            times=[int(x['time']) for x in xs]
-            print('OLDEST',datetime.fromtimestamp(min(times)/1000,timezone.utc).isoformat())
-            print('NEWEST',datetime.fromtimestamp(max(times)/1000,timezone.utc).isoformat())
-            print('USERS_FIELD',sum(1 for x in xs if x.get('users')),'/',len(xs))
-          for name,t,side,target in ev:
-            print('\nEVENT',name,datetime.fromtimestamp(t/1000,timezone.utc).isoformat(),side,target)
-            mm=[x for x in xs if x.get('side')==side and abs(int(x['time'])-t)<=10*60_000]
-            mm.sort(key=lambda x:abs(int(x['time'])-t))
-            print('MATCH_COUNT',len(mm))
-            for x in mm[:40]:
-              print(' ',datetime.fromtimestamp(int(x['time'])/1000,timezone.utc).isoformat(),x.get('side'),x.get('px'),x.get('sz'),x.get('users'),x.get('hash'),x.get('tid'))
-          PY
+          const BUILDER='0x2a2b6b093a9813fbd8cddae800c3d17d46460d17';
+          const targetTimes=[
+            ['open1', Date.parse('2026-09-04T20:52:00Z')],
+            ['close1',Date.parse('2026-09-04T21:10:00Z')],
+            ['open2', Date.parse('2026-09-04T21:23:00Z')],
+            ['close2',Date.parse('2026-09-05T00:12:00Z')],
+          ];
+
+          const wsTransport=new WebSocketTransport({url:'wss://rpc.hyperliquid.xyz/ws'});
+          const wsClient=new ExplorerClient({transport:wsTransport});
+          const latest=await new Promise(async (resolve,reject)=>{
+            const timer=setTimeout(()=>reject(new Error('explorerBlock timeout')),15000);
+            let sub;
+            sub=await wsClient.explorerBlock((data)=>{
+              if (!Array.isArray(data)||!data.length) return;
+              const b=data[data.length-1];
+              clearTimeout(timer);
+              resolve(b);
+              queueMicrotask(()=>sub?.unsubscribe?.().catch?.(()=>{}));
+            },reject);
+          });
+          console.log('LATEST',JSON.stringify(latest));
+
+          const httpTransport=new HttpTransport();
+          const client=new ExplorerClient({transport:httpTransport});
+          const cache=new Map();
+          async function block(height){
+            if(cache.has(height)) return cache.get(height);
+            const r=await client.blockDetails({height});
+            const b=r.blockDetails;
+            cache.set(height,b);
+            return b;
+          }
+
+          async function findHeightAtOrBefore(ts){
+            let lo=1, hi=latest.height;
+            while(lo<hi){
+              const mid=Math.ceil((lo+hi)/2);
+              let b;
+              try { b=await block(mid); } catch(e){ hi=mid-1; continue; }
+              if(Number(b.blockTime)<=ts) lo=mid; else hi=mid-1;
+            }
+            return lo;
+          }
+
+          function collectAddresses(obj, path='', out=[]){
+            if(obj==null) return out;
+            if(typeof obj==='string'){
+              if(/^0x[a-fA-F0-9]{40}$/.test(obj)) out.push([path,obj.toLowerCase()]);
+              return out;
+            }
+            if(Array.isArray(obj)){ obj.forEach((v,i)=>collectAddresses(v,`${path}[${i}]`,out)); return out; }
+            if(typeof obj==='object'){ for(const [k,v] of Object.entries(obj)) collectAddresses(v,path?`${path}.${k}`:k,out); }
+            return out;
+          }
+
+          function containsBuilder(tx){
+            return JSON.stringify(tx).toLowerCase().includes(BUILDER);
+          }
+          function looksZec(tx){
+            const s=JSON.stringify(tx).toUpperCase();
+            return s.includes('ZEC');
+          }
+          function looksOrder(tx){
+            const s=JSON.stringify(tx).toLowerCase();
+            return s.includes('order') || s.includes('orders');
+          }
+
+          for(const [name,ts] of targetTimes){
+            const h=await findHeightAtOrBefore(ts);
+            const center=await block(h);
+            console.log('\nTARGET',name,new Date(ts).toISOString(),'HEIGHT',h,'BLOCKTIME',new Date(Number(center.blockTime)).toISOString(),'TXS',center.numTxs);
+            const hits=[];
+            // scan roughly +/- 90 seconds assuming subsecond blocks; use actual times to stop
+            for(let dh=-500;dh<=500;dh++){
+              const hh=h+dh; if(hh<1||hh>latest.height) continue;
+              let b; try{b=await block(hh);}catch{continue;}
+              const dt=Number(b.blockTime)-ts;
+              if(dt < -120000 || dt > 120000) continue;
+              for(const tx of b.txs||[]){
+                if(containsBuilder(tx) && looksOrder(tx)){
+                  hits.push({height:hh,blockTime:b.blockTime,dt,zec:looksZec(tx),tx});
+                }
+              }
+            }
+            console.log('BUILDER_ORDER_HITS',hits.length,'ZEC_BUILDER_HITS',hits.filter(x=>x.zec).length);
+            for(const x of hits.filter(x=>x.zec).slice(0,80)){
+              console.log('HIT',name,'dt_ms',x.dt,'height',x.height,'addresses',JSON.stringify(collectAddresses(x.tx)),'tx',JSON.stringify(x.tx).slice(0,5000));
+            }
+          }
+          JS
+          node /tmp/resolve.mjs
