@@ -8,117 +8,36 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve aoyingziben from Fomo builder fills
+      - name: Probe recent ZEC trades
         shell: bash
         run: |
-          python -m pip install --quiet requests lz4
-          cat > /tmp/resolve.py <<'PY'
-          import csv, io, math, requests, lz4.frame
-          from collections import defaultdict
+          python - <<'PY'
+          import requests
           from datetime import datetime, timezone
 
-          BUILDER='0x2a2b6b093a9813fbd8cddae800c3d17d46460d17'
-          BASE='https://stats-data.hyperliquid.xyz/Mainnet/builder_fills'
-          # Screenshot is from UTC+8 device time. Open short=A, close short=B.
           events=[
-            dict(name='open1', ts='2026-09-04T20:52:00+00:00', side='A', size=1186.180233463035, entry=1028.0),
-            dict(name='close1',ts='2026-09-04T21:10:00+00:00', side='B', size=225.10, entry=1025.9),
-            dict(name='open2', ts='2026-09-04T21:23:00+00:00', side='A', size=202.6200019495, entry=1025.9),
-            dict(name='close2',ts='2026-09-05T00:12:00+00:00', side='B', size=139.46999707, entry=1023.9),
+            ('open1','2026-09-04T20:52:00+00:00','A',1186.180233463035),
+            ('close1','2026-09-04T21:10:00+00:00','B',225.10),
+            ('open2','2026-09-04T21:23:00+00:00','A',202.6200019495),
+            ('close2','2026-09-05T00:12:00+00:00','B',139.46999707),
           ]
-          for e in events:
-            e['ms']=int(datetime.fromisoformat(e['ts']).timestamp()*1000)
-
-          rows=[]
-          for day in ('20260904','20260905'):
-            url=f'{BASE}/{BUILDER}/{day}.csv.lz4'
-            r=requests.get(url,timeout=60)
-            print('ARCHIVE',day,r.status_code,len(r.content))
-            if r.status_code!=200: continue
-            raw=lz4.frame.decompress(r.content).decode('utf-8')
-            cr=csv.DictReader(io.StringIO(raw))
-            count=0
-            for x in cr:
-              coin=str(x.get('coin',''))
-              if coin.split(':')[-1].upper()!='ZEC': continue
-              t=x.get('time','')
-              try:
-                if t.isdigit():
-                  ms=int(t)
-                  if ms<10_000_000_000: ms*=1000
-                else:
-                  ms=int(datetime.fromisoformat(t.replace('Z','+00:00')).timestamp()*1000)
-                rows.append(dict(time=ms,user=x['user'].lower(),coin=coin,side=x.get('side',''),px=float(x['px']),sz=float(x['sz']),raw=t))
-                count+=1
-              except Exception:
-                pass
-            print('ZEC_ROWS',day,count)
-
-          print('TOTAL_ZEC_ROWS',len(rows))
-          if not rows: raise SystemExit(2)
-
-          def clusters_for(user, e, window_ms=8*60_000, gap_ms=15_000):
-            rr=sorted([r for r in rows if r['user']==user and r['side']==e['side'] and abs(r['time']-e['ms'])<=window_ms], key=lambda z:z['time'])
-            clusters=[]; cur=[]
-            for r in rr:
-              if cur and r['time']-cur[-1]['time']>gap_ms:
-                clusters.append(cur); cur=[]
-              cur.append(r)
-            if cur: clusters.append(cur)
-            out=[]
-            for c in clusters:
-              sz=sum(z['sz'] for z in c)
-              ntl=sum(z['sz']*z['px'] for z in c)
-              px=ntl/sz if sz else 0
-              t=sum(z['time']*z['sz'] for z in c)/sz if sz else c[0]['time']
-              out.append(dict(user=user,time=t,sz=sz,px=px,n=len(c),dt=abs(t-e['ms'])/1000,rel=abs(sz-e['size'])/e['size']))
-            return out
-
-          users=sorted(set(r['user'] for r in rows))
-          per_event={}
-          for e in events:
-            candidates=[]
-            for u in users:
-              cs=clusters_for(u,e)
-              if not cs: continue
-              best=min(cs,key=lambda c:(c['rel']*3)+(c['dt']/180))
-              if best['dt']<=8*60:
-                candidates.append(best)
-            candidates.sort(key=lambda c:(c['rel']*3)+(c['dt']/180))
-            per_event[e['name']]=candidates
-            print('\nEVENT',e['name'],e['ts'],e['side'],'target_sz',round(e['size'],4))
-            for c in candidates[:20]:
-              print(' ',c['user'],'dt_s',round(c['dt'],1),'sz',round(c['sz'],4),'rel',round(c['rel'],4),'px',round(c['px'],3),'fills',c['n'])
-
-          scores=[]
-          for u in users:
-            hits=[]; score=0.0
-            for e in events:
-              cs=[c for c in per_event[e['name']] if c['user']==u]
-              if not cs: continue
-              c=cs[0]
-              # Strong event hit: time within 3 min and size within 35%; medium allows wider size.
-              if c['dt']<=180 and c['rel']<=0.35:
-                q=1.0 + max(0,1-c['rel'])*2 + max(0,1-c['dt']/180)
-                hits.append((e['name'],c,'strong')); score+=q
-              elif c['dt']<=300 and c['rel']<=0.75:
-                q=0.25 + max(0,1-c['rel'])
-                hits.append((e['name'],c,'weak')); score+=q
-            if hits: scores.append((score,len([h for h in hits if h[2]=='strong']),len(hits),u,hits))
-          scores.sort(reverse=True)
-          print('\nMULTI_EVENT_TOP')
-          for sc,strong,n,u,hits in scores[:30]:
-            print('USER',u,'score',round(sc,3),'strong',strong,'events',n)
-            for name,c,kind in hits:
-              print(' ',name,kind,'dt_s',round(c['dt'],1),'sz',round(c['sz'],4),'rel',round(c['rel'],4),'px',round(c['px'],3),'fills',c['n'])
-
-          # Also print users that appear near all first three event minutes regardless of size.
-          print('\nTIME_SIDE_INTERSECTION_FIRST3')
-          sets=[]
-          for e in events[:3]:
-            s=set(r['user'] for r in rows if r['side']==e['side'] and abs(r['time']-e['ms'])<=180_000)
-            print(e['name'],'users',len(s)); sets.append(s)
-          inter=set.intersection(*sets) if sets else set()
-          print('INTERSECTION',len(inter),sorted(inter))
+          ev=[(n,int(datetime.fromisoformat(t).timestamp()*1000),s,z) for n,t,s,z in events]
+          r=requests.post('https://api.hyperliquid.xyz/info',json={'type':'recentTrades','coin':'ZEC'},timeout=30)
+          print('HTTP',r.status_code)
+          print('BODY_PREFIX',r.text[:500])
+          r.raise_for_status()
+          xs=r.json()
+          print('COUNT',len(xs))
+          if xs:
+            times=[int(x['time']) for x in xs]
+            print('OLDEST',datetime.fromtimestamp(min(times)/1000,timezone.utc).isoformat())
+            print('NEWEST',datetime.fromtimestamp(max(times)/1000,timezone.utc).isoformat())
+            print('USERS_FIELD',sum(1 for x in xs if x.get('users')),'/',len(xs))
+          for name,t,side,target in ev:
+            print('\nEVENT',name,datetime.fromtimestamp(t/1000,timezone.utc).isoformat(),side,target)
+            mm=[x for x in xs if x.get('side')==side and abs(int(x['time'])-t)<=10*60_000]
+            mm.sort(key=lambda x:abs(int(x['time'])-t))
+            print('MATCH_COUNT',len(mm))
+            for x in mm[:40]:
+              print(' ',datetime.fromtimestamp(int(x['time'])/1000,timezone.utc).isoformat(),x.get('side'),x.get('px'),x.get('sz'),x.get('users'),x.get('hash'),x.get('tid'))
           PY
-          python /tmp/resolve.py
