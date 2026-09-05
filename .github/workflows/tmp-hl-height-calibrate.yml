@@ -15,18 +15,16 @@ jobs:
           URL='https://rpc.hyperliquid.xyz/explorer'
           def get(h):
             req=urllib.request.Request(URL,data=json.dumps({'type':'blockDetails','height':h}).encode(),headers={'Content-Type':'application/json','User-Agent':'Mozilla/5.0'})
-            for i in range(4):
+            for i in range(5):
               try:
-                with urllib.request.urlopen(req,timeout=8) as r:
-                  j=json.load(r)
+                with urllib.request.urlopen(req,timeout=8) as r: j=json.load(r)
                 b=j.get('blockDetails',j); t=b.get('blockTime')
                 print('BLOCK',h,'TIME',t,'ISO',datetime.datetime.fromtimestamp(int(t)/1000,datetime.timezone.utc).isoformat() if t else None,'NUMTX',b.get('numTxs'))
                 return
               except urllib.error.HTTPError as e:
-                if e.code==429 and i<3: time.sleep(2**i); continue
+                if e.code==429 and i<4: time.sleep(2**i); continue
                 print('BLOCK',h,'ERR',repr(e)); return
-              except Exception as e:
-                print('BLOCK',h,'ERR',repr(e)); return
-          for h in [900000000,1000000000,1050000000,1100000000,1120000000,1140000000,1160000000,1180000000,1200000000]:
-            get(h); time.sleep(0.35)
+              except Exception as e: print('BLOCK',h,'ERR',repr(e)); return
+          for h in [1133000000,1134000000,1135000000,1135500000,1136000000,1136500000,1137000000,1138000000]:
+            get(h); time.sleep(0.5)
           PY
