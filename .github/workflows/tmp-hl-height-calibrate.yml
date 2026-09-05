@@ -5,77 +5,102 @@ on:
       - tmp-hl-resolve-aoyingziben-20260905
 jobs:
   calibrate:
-    timeout-minutes: 8
+    timeout-minutes: 4
     runs-on: ubuntu-latest
     steps:
       - shell: bash
         run: |
-          python -m pip install --quiet huggingface_hub pyarrow requests
+          python -m pip install --quiet requests
           python3 - <<'PY'
-          import json,re,os
+          import json, requests
           from collections import defaultdict
-          from datetime import datetime,timezone
-          from huggingface_hub import list_repo_files,hf_hub_download
-          import pyarrow.parquet as pq
+          from datetime import datetime, timezone
 
-          REPO='gionuibk/hyperliquid-node-fills-by-block'
-          files=list_repo_files(REPO,repo_type='dataset')
-          matches=[f for f in files if '20260904' in f or '20260905' in f]
-          print('DATE_MATCHES',len(matches))
-          for f in matches[:100]: print('FILE',f)
-          if not matches:
-            raise SystemExit('NO_20260904_FILES')
+          URL='https://portal.sqd.dev/datasets/hyperliquid-fills/finalized-stream'
+          events=[
+            dict(name='open1', lo=1135671950, hi=1135673150, start='2026-09-04T20:51:40+00:00', end='2026-09-04T20:53:20+00:00', side='A', dir='Open Short', target=1219393.28/1028.0, px=1028.0),
+            dict(name='close1',lo=1135687000, hi=1135688500, start='2026-09-04T21:09:40+00:00', end='2026-09-04T21:11:20+00:00', side='B', dir='Close Short',target=230930.09/1025.9, px=1025.9),
+            dict(name='open2', lo=1135697900, hi=1135699400, start='2026-09-04T21:22:40+00:00', end='2026-09-04T21:24:20+00:00', side='A', dir='Open Short', target=207867.86/1025.9, px=1025.9),
+            dict(name='close2',lo=1135838700, hi=1135840200, start='2026-09-05T00:11:40+00:00', end='2026-09-05T00:13:20+00:00', side='B', dir='Close Short',target=142803.33/1023.9, px=1023.9),
+          ]
 
-          dated=[]
-          for f in matches:
-            m=re.search(r'20260904_(\d+)',f)
-            if m: dated.append((int(m.group(1)),f))
-          dated.sort()
-          # 20:52 UTC should live in the first batch whose "upto" hour is >=21.
-          candidates=[(h,f) for h,f in dated if h>=21] or dated
-          print('CANDIDATE_SHARDS',candidates[:10])
-
-          lo,hi=1135671950,1135673150
-          rows=[]
-          for h,f in candidates[:3]:
-            print('DOWNLOAD',h,f)
-            path=hf_hub_download(REPO,f,repo_type='dataset')
-            pf=pq.ParquetFile(path)
-            print('SHARD',f,'ROWS',pf.metadata.num_rows,'GROUPS',pf.num_row_groups)
-            table=pq.read_table(path,columns=['block_number','block_time','events'],filters=[('block_number','>=',lo),('block_number','<=',hi)])
-            print('FILTERED',f,table.num_rows)
-            rows.extend(table.to_pylist())
-            if rows: break
-
-          print('TOTAL_FILTERED_ROWS',len(rows))
-          z=[]
-          for row in rows:
-            ev=row.get('events')
-            if isinstance(ev,str):
-              try: ev=json.loads(ev)
-              except: continue
-            if not isinstance(ev,list): continue
-            for pair in ev:
+          def ms(s): return int(datetime.fromisoformat(s).timestamp()*1000)
+          all_event={}
+          all_users=set()
+          for e in events:
+            q={
+              'type':'hyperliquidFills','fromBlock':e['lo'],'toBlock':e['hi'],
+              'fields':{
+                'block':{'number':True,'timestamp':True},
+                'fill':{'user':True,'coin':True,'px':True,'sz':True,'side':True,'dir':True,'time':True,'hash':True,'oid':True,'closedPnl':True,'crossed':True,'fee':True,'tid':True}
+              },
+              'fills':[{'coin':['ZEC']}]
+            }
+            r=requests.post(URL,json=q,timeout=90)
+            print('\nHTTP',e['name'],r.status_code,'BYTES',len(r.content))
+            print('PREFIX',r.text[:300])
+            r.raise_for_status()
+            # Portal response may be JSON array or JSON-lines stream.
+            txt=r.text.strip()
+            blocks=[]
+            if not txt:
+              blocks=[]
+            else:
               try:
-                user,fill=pair[0],pair[1]
-                if str(fill.get('coin','')).upper()=='ZEC': z.append((str(user).lower(),fill,row.get('block_number'),row.get('block_time')))
-              except: pass
-          print('ZEC_FILLS',len(z))
-          start=int(datetime(2026,9,4,20,52,0,tzinfo=timezone.utc).timestamp()*1000); end=start+60_000
-          by=defaultdict(list)
-          for user,fill,bn,bt in z:
-            try:t=int(fill.get('time',0))
-            except:continue
-            if start-10_000<=t<=end+10_000 and fill.get('side')=='A':by[user].append(fill)
-          target=1219393.28/1028.0
-          ranked=[]
-          for user,fs in by.items():
-            sz=sum(float(f.get('sz',0)) for f in fs)
-            ntl=sum(float(f.get('sz',0))*float(f.get('px',0)) for f in fs)
-            px=ntl/sz if sz else 0
-            rel=abs(sz-target)/target
-            ranked.append((rel,user,sz,px,sorted(set(str(f.get('dir')) for f in fs)),len(fs),min(int(f.get('time',0)) for f in fs),max(int(f.get('time',0)) for f in fs)))
-          ranked.sort()
-          print('CANDIDATES',len(ranked))
-          for x in ranked[:40]: print('CAND',x)
+                val=json.loads(txt)
+                blocks=val if isinstance(val,list) else [val]
+              except Exception:
+                blocks=[json.loads(line) for line in txt.splitlines() if line.strip()]
+            fills=[]
+            for b in blocks:
+              hdr=b.get('header',{})
+              for f in b.get('fills',[]):
+                f=dict(f); f['_block']=hdr.get('number'); f['_bt']=hdr.get('timestamp'); fills.append(f)
+            print('RAW_FILLS',e['name'],len(fills),'BLOCKS',len(blocks))
+            st,en=ms(e['start']),ms(e['end'])
+            good=[]
+            for f in fills:
+              try: t=int(f.get('time',0))
+              except: continue
+              if st<=t<=en and f.get('side')==e['side']:
+                good.append(f)
+            print('WINDOW_SIDE_FILLS',e['name'],len(good))
+            by=defaultdict(list)
+            for f in good:
+              by[str(f.get('user','')).lower()].append(f)
+            ranked=[]
+            for u,fs in by.items():
+              if not u.startswith('0x'): continue
+              sz=sum(float(f.get('sz',0)) for f in fs)
+              ntl=sum(float(f.get('sz',0))*float(f.get('px',0)) for f in fs)
+              vwap=ntl/sz if sz else 0
+              rel=abs(sz-e['target'])/e['target'] if e['target'] else 999
+              dirmatch=sum(1 for f in fs if f.get('dir')==e['dir'])
+              pxrel=abs(vwap-e['px'])/e['px'] if e['px'] else 0
+              times=[int(f.get('time',0)) for f in fs]
+              score=rel*3 + pxrel*8 - min(dirmatch,3)*0.12
+              ranked.append((score,rel,pxrel,u,sz,vwap,dirmatch,len(fs),min(times),max(times),sorted(set(str(f.get('dir')) for f in fs))))
+              all_users.add(u)
+            ranked.sort()
+            all_event[e['name']]=ranked
+            print('CANDIDATES',e['name'],len(ranked),'targetSz',round(e['target'],5),'targetPx',e['px'])
+            for x in ranked[:30]: print('CAND',e['name'],x)
+
+          # Cross-event ranking: same address showing in multiple screenshot windows is the strongest signal.
+          scores=[]
+          for u in all_users:
+            hits=[]; total=0
+            for e in events:
+              row=next((x for x in all_event[e['name']] if x[3]==u),None)
+              if row is None: continue
+              score,rel,pxrel,_,sz,vwap,dirmatch,n,t0,t1,dirs=row
+              # Count plausible events conservatively. UI notional may be position-level, so allow broad size mismatch.
+              plausible=(pxrel<=0.015 and dirmatch>0 and rel<=1.0)
+              if plausible:
+                hits.append((e['name'],rel,pxrel,sz,vwap,dirmatch,n,t0,t1,dirs))
+                total += max(0,2.5-score)
+            if hits: scores.append((len(hits),total,u,hits))
+          scores.sort(key=lambda x:(-x[0],-x[1]))
+          print('\nMULTI_EVENT_RANK')
+          for x in scores[:40]: print('USER',x[2],'EVENTS',x[0],'SCORE',round(x[1],4),'HITS',x[3])
           PY
