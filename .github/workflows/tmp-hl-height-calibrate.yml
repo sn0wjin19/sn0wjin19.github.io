@@ -1,0 +1,29 @@
+name: tmp-hl-height-calibrate
+on:
+  push:
+    branches:
+      - tmp-hl-resolve-aoyingziben-20260905
+jobs:
+  calibrate:
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, urllib.error, datetime
+          URL='https://rpc.hyperliquid.xyz/explorer'
+          def get(h):
+            req=urllib.request.Request(URL,data=json.dumps({'type':'blockDetails','height':h}).encode(),headers={'Content-Type':'application/json'})
+            try:
+              with urllib.request.urlopen(req,timeout=8) as r:
+                j=json.load(r)
+              b=j.get('blockDetails',j)
+              t=b.get('blockTime')
+              print('BLOCK',h,'STATUS ok','HEIGHT',b.get('height'),'TIME',t,'ISO',datetime.datetime.fromtimestamp(int(t)/1000,datetime.timezone.utc).isoformat() if t else None,'NUMTX',b.get('numTxs'))
+              return b
+            except Exception as e:
+              print('BLOCK',h,'ERR',repr(e))
+          for h in [612408133,620000000,630000000,640000000,650000000,660000000,670000000,680000000,690000000,700000000]:
+            get(h)
+          PY
